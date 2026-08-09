@@ -33,6 +33,7 @@ button:disabled{background:#555;color:#aaa}
 <div id="game-over-screen" class="overlay hidden">
 <h1>GAME OVER</h1>
 <p id="final-score">HEIGHT: 000</p>
+<p id="final-time">TIME: 0.00</p>
 <p id="best-score">BEST: 000</p>
 <button id="retry-button">RETRY</button>
 </div>
@@ -47,6 +48,7 @@ const gameOverScreen=document.getElementById("game-over-screen");
 const startButton=document.getElementById("start-button");
 const retryButton=document.getElementById("retry-button");
 const finalScore=document.getElementById("final-score");
+const finalTime=document.getElementById("final-time");
 const bestScore=document.getElementById("best-score");
 
 const W=360,H=640;
@@ -100,7 +102,6 @@ const CONFIG={
     END_MIN_GAP:88,
     END_MAX_GAP:116,
     DIFFICULTY_MAX_STEP:35,
-    KEEP_BELOW_STEPS:2,
     LAND_MARGIN_X:10,
     LAND_TOLERANCE:5,
     CAMERA_LINE:0.44,
@@ -118,6 +119,7 @@ resize();
 
 let gameState="title";
 let lastTime=0,elapsed=0;
+let playTime=0;
 let cameraY=0;
 let platforms=[];
 let nextPlatformY=0,nextStep=0;
@@ -173,8 +175,12 @@ function ensurePlatforms(){
 }
 
 function prunePlatforms(){
-    const minStep=Math.max(0,player.currentStep-CONFIG.KEEP_BELOW_STEPS);
-    platforms=platforms.filter(p=>p.step>=minStep);
+    // 救済対象は「まだ画面内に見えている足場」だけ。
+    // 画面下へ完全に消えた足場は毎フレーム削除する。
+    platforms=platforms.filter(p=>{
+        const screenY=p.y-cameraY;
+        return screenY<H;
+    });
 }
 
 function resetGame(){
@@ -182,6 +188,7 @@ function resetGame(){
     gameState="playing";
     lastTime=performance.now();
     elapsed=0;
+    playTime=0;
     cameraY=0;
     platforms=[];
     nextPlatformY=0;
@@ -246,6 +253,7 @@ function release(){
 
 function update(dt){
     elapsed+=dt;
+    playTime+=dt;
 
     if(player.grounded){
         if(!charging) aimPhase+=CONFIG.AIM_SPEED*dt;
@@ -318,6 +326,7 @@ function update(dt){
     }
 
     ensurePlatforms();
+    prunePlatforms();
 
     if(player.y-cameraY>H+60){
         endGame();
@@ -457,6 +466,7 @@ function draw(){
 
     ctx.textAlign="left";
     ctx.fillText("HEIGHT "+String(highestStep).padStart(3,"0"),12,23);
+    ctx.fillText("TIME "+playTime.toFixed(2),12,43);
 
     ctx.textAlign="right";
     ctx.fillText("BEST "+String(best).padStart(3,"0"),W-12,23);
@@ -492,6 +502,7 @@ function endGame(){
     }
 
     finalScore.textContent="HEIGHT: "+String(highestStep).padStart(3,"0");
+    finalTime.textContent="TIME: "+playTime.toFixed(2);
     bestScore.textContent="BEST: "+String(best).padStart(3,"0");
 
     gameOverScreen.classList.remove("hidden");
