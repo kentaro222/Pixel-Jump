@@ -97,11 +97,11 @@ const CONFIG={
     START_MAX_W:165,
     START_MIN_GAP:72,
     START_MAX_GAP:98,
-    END_MIN_W:72,
-    END_MAX_W:108,
-    END_MIN_GAP:88,
-    END_MAX_GAP:116,
-    DIFFICULTY_MAX_STEP:20,
+    END_MIN_W:52,
+    END_MAX_W:88,
+    END_MIN_GAP:96,
+    END_MAX_GAP:128,
+    DIFFICULTY_MAX_STEP:40,
     LAND_MARGIN_X:10,
     LAND_TOLERANCE:5,
     CAMERA_LINE:0.44,
@@ -147,7 +147,15 @@ const lerp=(a,b,t)=>a+(b-a)*t;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 
 function difficulty(step){
-    return clamp(step/CONFIG.DIFFICULTY_MAX_STEP,0,1);
+    const t=clamp(
+        step/CONFIG.DIFFICULTY_MAX_STEP,
+        0,
+        1
+    );
+
+    // 序盤〜中盤は比較的早く締まり、
+    // 最高難度への到達だけは40段付近まで引っ張る。
+    return Math.pow(t,0.75);
 }
 
 function getPlatformSettings(step){
