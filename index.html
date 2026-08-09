@@ -101,7 +101,7 @@ const CONFIG={
     END_MAX_W:108,
     END_MIN_GAP:88,
     END_MAX_GAP:116,
-    DIFFICULTY_MAX_STEP:35,
+    DIFFICULTY_MAX_STEP:20,
     LAND_MARGIN_X:10,
     LAND_TOLERANCE:5,
     CAMERA_LINE:0.44,
@@ -256,7 +256,19 @@ function update(dt){
     playTime+=dt;
 
     if(player.grounded){
-        if(!charging) aimPhase+=CONFIG.AIM_SPEED*dt;
+        if(!charging){
+            aimPhase+=CONFIG.AIM_SPEED*dt;
+
+            // AIM中はゲージ方向に合わせて向きを変える。
+            // 中央付近では前の向きを維持してチラつきを防ぐ。
+            const liveAim=aimValue();
+            if(liveAim>0.12){
+                player.facing=1;
+            }else if(liveAim<-0.12){
+                player.facing=-1;
+            }
+        }
+
         if(charging){
             charge=Math.min(1,charge+dt/CONFIG.CHARGE_TIME);
         }
@@ -461,15 +473,26 @@ function draw(){
     drawPlayer();
     drawMeter();
 
-    ctx.fillStyle="#fff";
     ctx.font="bold 15px Courier New";
-
     ctx.textAlign="left";
-    ctx.fillText("HEIGHT "+String(highestStep).padStart(3,"0"),12,23);
-    ctx.fillText("TIME "+playTime.toFixed(2),12,43);
+    ctx.lineJoin="miter";
+    ctx.miterLimit=2;
 
-    ctx.textAlign="right";
-    ctx.fillText("BEST "+String(best).padStart(3,"0"),W-12,23);
+    const heightText="HEIGHT "+String(highestStep).padStart(3,"0");
+    const timeText="TIME "+playTime.toFixed(2);
+
+    // 黒縁を先に描いて、白い足場と重なっても読めるようにする。
+    // 背景板は使わないので足場自体は隠れない。
+    ctx.lineWidth=4;
+    ctx.strokeStyle="#000";
+    ctx.strokeText(heightText,12,23);
+    ctx.strokeText(timeText,12,43);
+
+    ctx.fillStyle="#fff";
+    ctx.fillText(heightText,12,23);
+    ctx.fillText(timeText,12,43);
+
+
 }
 
 function loop(now){
