@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>PIXEL JUMP</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;overflow:hidden;touch-action:none;font-family:"Courier New",monospace}
+body{min-height:100dvh;display:flex;align-items:center;justify-content:center}
+#game-wrap{position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center}
+canvas{display:block;background:#000;border:2px solid #fff;image-rendering:pixelated;image-rendering:crisp-edges}
+.overlay{position:absolute;inset:0;z-index:20;display:flex;flex-direction:column;justify-content:center;align-items:center;background:rgba(0,0,0,.88);text-align:center;padding:24px}
+.hidden{display:none}
+h1{margin:0 0 12px;font-size:38px}
+p{margin:5px 0;color:#bbb;font-size:13px}
+button{margin-top:20px;padding:14px 30px;border:0;background:#fff;color:#000;font:700 18px "Courier New",monospace}
+button:disabled{background:#555;color:#aaa}
+</style>
+</head>
+<body>
+<div id="game-wrap">
+<canvas id="game"></canvas>
+
+<div id="start-screen" class="overlay">
+<h1>PIXEL JUMP</h1>
+<p>PRESS = DIRECTION</p>
+<p>HOLD = POWER</p>
+<p>RELEASE = JUMP</p>
+<button id="start-button" disabled>LOADING...</button>
+</div>
+
+<div id="game-over-screen" class="overlay hidden">
+<h1>GAME OVER</h1>
+<p id="final-score">HEIGHT: 000</p>
+<p id="best-score">BEST: 000</p>
+<button id="retry-button">RETRY</button>
+</div>
+</div>
+
+<script>
+(() => {
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+const startScreen=document.getElementById("start-screen");
+const gameOverScreen=document.getElementById("game-over-screen");
+const startButton=document.getElementById("start-button");
+const retryButton=document.getElementById("retry-button");
+const finalScore=document.getElementById("final-score");
+const bestScore=document.getElementById("best-score");
+
+const W=360,H=640;
+canvas.width=W; canvas.height=H;
+ctx.imageSmoothingEnabled=false;
+
+const spriteSheet=new Image();
+let spriteReady=false;
+const FRAME_W=16,FRAME_H=16;
+const FRAME_IDLE=0,FRAME_STEP=1,FRAME_JUMP=2;
+
+spriteSheet.onload=()=>{
+    if(spriteSheet.naturalWidth!==48 || spriteSheet.naturalHeight!==16){
+        startButton.textContent="SPRITE SIZE ERROR";
+        console.error("player_1bit00_sheet.png must be 48x16.",spriteSheet.naturalWidth,spriteSheet.naturalHeight);
+        return;
+    }
+    spriteReady=true;
+    startButton.disabled=false;
+    startButton.textContent="START";
+};
+
+spriteSheet.onerror=()=>{
+    startButton.textContent="SPRITE LOAD ERROR";
+    console.error("Could not load ./player_1bit00_sheet.png");
+};
+
+spriteSheet.src="./player_1bit00_sheet.png";
+
+const CONFIG={
+    PLAYER_SIZE:48,
+    GRAVITY:980,
+    MAX_FALL_SPEED:820,
+    MIN_JUMP_VY:410,
+    MAX_JUMP_VY:720,
+    MAX_VX:250,
+    AIM_SPEED:0.72,
+    CHARGE_TIME:0.85,
+    STEP_FPS:5,
+    METER_W:72,
+    METER_H:7,
+    METER_MARGIN:8,
+    POWER_GAP:14,
+    PLATFORM_H:8,
+    START_MIN_W:120,
+    START_MAX_W:165,
+    START_MIN_GAP:72,
+    START_MAX_GAP:98,
+    END_MIN_W:72,
+    END_MAX_W:108,
+    END_MIN_GAP:88,
+    END_MAX_GAP:116,
+    DIFFICULTY_MAX_STEP:35,
+    KEEP_BELOW_STEPS:2,
+    LAND_MARGIN_X:10,
+    LAND_TOLERANCE:5,
+    CAMERA_LINE:0.44,
+    WALL_BOUNCE:1.0
+};
+
+function resize(){
+    const scale=Math.min(innerWidth/W,innerHeight/H);
+    canvas.style.width=Math.floor(W*scale)+"px";
+    canvas.style.height=Math.floor(H*scale)+"px";
+    ctx.imageSmoothingEnabled=false;
+}
+addEventListener("resize",resize);
+resize();
+
+let gameState="title";
+let lastTime=0,elapsed=0;
+let cameraY=0;
+let platforms=[];
+let nextPlatformY=0,nextStep=0;
+let highestStep=0;
+let best=Number(localStorage.getItem("pixelJumpBest")||0);
+
+let aimPhase=0;
+let charging=false;
+let charge=0;
+let lockedAim=0;
+let directionLocked=false;
+
+const player={
+    x:0,y:0,vx:0,vy:0,
+    w:CONFIG.PLAYER_SIZE,
+    h:CONFIG.PLAYER_SIZE,
+    grounded:true,
+    currentPlatformId:0,
+    currentStep:0,
+    facing:1
+};
+
+const rand=(a,b)=>a+Math.random()*(b-a);
+const lerp=(a,b,t)=>a+(b-a)*t;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+function difficulty(step){
+    return clamp(step/CONFIG.DIFFICULTY_MAX_STEP,0,1);
+}
+
+function getPlatformSettings(step){
+    const d=difficulty(step);
+    return {
+        minW:lerp(CONFIG.START_MIN_W,CONFIG.END_MIN_W,d),
+        maxW:lerp(CONFIG.START_MAX_W,CONFIG.END_MAX_W,d),
+        minGap:lerp(CONFIG.START_MIN_GAP,CONFIG.END_MIN_GAP,d),
+        maxGap:lerp(CONFIG.START_MAX_GAP,CONFIG.END_MAX_GAP,d)
+    };
+}
+
+function addPlatform(){
+    nextStep++;
+    const s=getPlatformSettings(nextStep);
+    nextPlatformY-=rand(s.minGap,s.maxGap);
+    const width=rand(s.minW,s.maxW);
+    const margin=14;
+    const x=rand(margin,W-margin-width);
+    platforms.push({id:nextStep,step:nextStep,x,y:nextPlatformY,w:width,h:CONFIG.PLATFORM_H});
+}
+
+function ensurePlatforms(){
+    while(nextPlatformY>cameraY-720) addPlatform();
+}
+
+function prunePlatforms(){
+    const minStep=Math.max(0,player.currentStep-CONFIG.KEEP_BELOW_STEPS);
+    platforms=platforms.filter(p=>p.step>=minStep);
+}
+
+function resetGame(){
+    if(!spriteReady) return;
+    gameState="playing";
+    lastTime=performance.now();
+    elapsed=0;
+    cameraY=0;
+    platforms=[];
+    nextPlatformY=0;
+    nextStep=0;
+    highestStep=0;
+    aimPhase=0;
+    charging=false;
+    charge=0;
+    lockedAim=0;
+    directionLocked=false;
+
+    const baseY=560;
+    const base={id:0,step:0,x:65,y:baseY,w:230,h:CONFIG.PLATFORM_H};
+    platforms.push(base);
+
+    player.x=W/2-player.w/2;
+    player.y=baseY-player.h;
+    player.vx=0;
+    player.vy=0;
+    player.grounded=true;
+    player.currentPlatformId=base.id;
+    player.currentStep=0;
+    player.facing=1;
+
+    nextPlatformY=baseY;
+    nextStep=0;
+    for(let i=0;i<10;i++) addPlatform();
+
+    startScreen.classList.add("hidden");
+    gameOverScreen.classList.add("hidden");
+    requestAnimationFrame(loop);
+}
+
+function aimValue(){
+    return Math.sin(aimPhase*Math.PI*2);
+}
+
+function press(){
+    if(gameState!=="playing"||!player.grounded||charging) return;
+    lockedAim=aimValue();
+    directionLocked=true;
+
+    if(Math.abs(lockedAim)>0.03){
+        player.facing=lockedAim>0?1:-1;
+    }
+
+    charging=true;
+    charge=0;
+}
+
+function release(){
+    if(gameState!=="playing"||!charging) return;
+
+    charging=false;
+    const power=Math.max(0.12,charge);
+
+    player.vx=lockedAim*CONFIG.MAX_VX;
+    player.vy=-lerp(CONFIG.MIN_JUMP_VY,CONFIG.MAX_JUMP_VY,power);
+    player.grounded=false;
+    player.currentPlatformId=null;
+}
+
+function update(dt){
+    elapsed+=dt;
+
+    if(player.grounded){
+        if(!charging) aimPhase+=CONFIG.AIM_SPEED*dt;
+        if(charging){
+            charge=Math.min(1,charge+dt/CONFIG.CHARGE_TIME);
+        }
+
+        const platform=platforms.find(p=>p.id===player.currentPlatformId);
+        if(platform) player.y=platform.y-player.h;
+    } else {
+        const previousBottom=player.y+player.h;
+
+        player.vy=Math.min(CONFIG.MAX_FALL_SPEED,player.vy+CONFIG.GRAVITY*dt);
+        player.x+=player.vx*dt;
+        player.y+=player.vy*dt;
+
+        if(player.x<0){
+            player.x=0;
+            player.vx=Math.abs(player.vx)*CONFIG.WALL_BOUNCE;
+            player.facing=1;
+        } else if(player.x+player.w>W){
+            player.x=W-player.w;
+            player.vx=-Math.abs(player.vx)*CONFIG.WALL_BOUNCE;
+            player.facing=-1;
+        }
+
+        if(player.vy>0){
+            const newBottom=player.y+player.h;
+
+            const candidates=platforms
+                .filter(p=>p.y>=previousBottom-CONFIG.LAND_TOLERANCE &&
+                           p.y<=newBottom+CONFIG.LAND_TOLERANCE)
+                .sort((a,b)=>a.y-b.y);
+
+            for(const p of candidates){
+                const overlapX=
+                    player.x+player.w-CONFIG.LAND_MARGIN_X>p.x &&
+                    player.x+CONFIG.LAND_MARGIN_X<p.x+p.w;
+
+                const crossedY=
+                    previousBottom<=p.y+CONFIG.LAND_TOLERANCE &&
+                    newBottom>=p.y;
+
+                if(overlapX&&crossedY){
+                    player.y=p.y-player.h;
+                    player.vx=0;
+                    player.vy=0;
+                    player.grounded=true;
+                    player.currentPlatformId=p.id;
+                    player.currentStep=p.step;
+
+                    directionLocked=false;
+                    charging=false;
+                    charge=0;
+
+                    highestStep=Math.max(highestStep,p.step);
+
+                    prunePlatforms();
+                    break;
+                }
+            }
+        }
+    }
+
+    const playerScreenY=player.y-cameraY;
+    const cameraLine=H*CONFIG.CAMERA_LINE;
+
+    if(playerScreenY<cameraLine){
+        cameraY=player.y-cameraLine;
+    }
+
+    ensurePlatforms();
+
+    if(player.y-cameraY>H+60){
+        endGame();
+    }
+}
+
+function getPlayerFrame(){
+    if(!player.grounded) return FRAME_JUMP;
+    if(!directionLocked) return FRAME_IDLE;
+
+    const frame=Math.floor(elapsed*CONFIG.STEP_FPS)%2;
+    return frame===0?FRAME_IDLE:FRAME_STEP;
+}
+
+function drawPlayer(){
+    if(!spriteReady) return;
+
+    const frame=getPlayerFrame();
+    const sourceX=frame*FRAME_W;
+    const screenX=Math.round(player.x);
+    const screenY=Math.round(player.y-cameraY);
+
+    ctx.save();
+    ctx.imageSmoothingEnabled=false;
+
+    if(player.facing===1){
+        ctx.translate(screenX+player.w,screenY);
+        ctx.scale(-1,1);
+        ctx.drawImage(
+            spriteSheet,
+            sourceX,0,FRAME_W,FRAME_H,
+            0,0,player.w,player.h
+        );
+    } else {
+        ctx.translate(screenX,screenY);
+        ctx.drawImage(
+            spriteSheet,
+            sourceX,0,FRAME_W,FRAME_H,
+            0,0,player.w,player.h
+        );
+    }
+
+    ctx.restore();
+}
+
+function drawPlatform(p){
+    const sy=Math.floor(p.y-cameraY);
+    if(sy<-20||sy>H+20) return;
+
+    ctx.fillStyle="#fff";
+    ctx.fillRect(Math.floor(p.x),sy,Math.floor(p.w),p.h);
+}
+
+function drawMeter(){
+    if(!player.grounded) return;
+
+    const playerCenter=player.x+player.w/2;
+    const playerScreenY=player.y-cameraY;
+    const half=CONFIG.METER_W/2;
+
+    const centerX=clamp(
+        playerCenter,
+        CONFIG.METER_MARGIN+half,
+        W-CONFIG.METER_MARGIN-half
+    );
+
+    const meterY=Math.max(42,playerScreenY-32);
+
+    const plateHeight=charging?35:20;
+
+    ctx.fillStyle="#000";
+    ctx.fillRect(
+        Math.floor(centerX-half-5),
+        Math.floor(meterY-6),
+        CONFIG.METER_W+10,
+        plateHeight
+    );
+
+    ctx.strokeStyle="#fff";
+    ctx.lineWidth=2;
+    ctx.strokeRect(
+        Math.floor(centerX-half),
+        Math.floor(meterY),
+        CONFIG.METER_W,
+        CONFIG.METER_H
+    );
+
+    const aim=charging?lockedAim:aimValue();
+
+    const dotX=
+        centerX-half+
+        (aim*0.5+0.5)*CONFIG.METER_W;
+
+    ctx.fillStyle="#fff";
+    ctx.fillRect(
+        Math.floor(dotX-2),
+        Math.floor(meterY-3),
+        4,
+        13
+    );
+
+    if(charging){
+        const powerY=meterY+CONFIG.POWER_GAP;
+
+        ctx.strokeRect(
+            Math.floor(centerX-half),
+            Math.floor(powerY),
+            CONFIG.METER_W,
+            CONFIG.METER_H
+        );
+
+        ctx.fillRect(
+            Math.floor(centerX-half),
+            Math.floor(powerY),
+            Math.floor(CONFIG.METER_W*charge),
+            CONFIG.METER_H
+        );
+    }
+}
+
+function draw(){
+    ctx.fillStyle="#000";
+    ctx.fillRect(0,0,W,H);
+
+    ctx.fillStyle="rgba(255,255,255,0.035)";
+    for(let y=40;y<H;y+=40){
+        ctx.fillRect(0,y,W,1);
+    }
+
+    for(const p of platforms) drawPlatform(p);
+
+    drawPlayer();
+    drawMeter();
+
+    ctx.fillStyle="#fff";
+    ctx.font="bold 15px Courier New";
+
+    ctx.textAlign="left";
+    ctx.fillText("HEIGHT "+String(highestStep).padStart(3,"0"),12,23);
+
+    ctx.textAlign="right";
+    ctx.fillText("BEST "+String(best).padStart(3,"0"),W-12,23);
+}
+
+function loop(now){
+    if(gameState!=="playing") return;
+
+    const dt=Math.min(
+        0.033,
+        Math.max(0,(now-lastTime)/1000)
+    );
+
+    lastTime=now;
+
+    update(dt);
+    draw();
+
+    if(gameState==="playing"){
+        requestAnimationFrame(loop);
+    }
+}
+
+function endGame(){
+    if(gameState!=="playing") return;
+
+    gameState="gameover";
+    charging=false;
+
+    if(highestStep>best){
+        best=highestStep;
+        localStorage.setItem("pixelJumpBest",String(best));
+    }
+
+    finalScore.textContent="HEIGHT: "+String(highestStep).padStart(3,"0");
+    bestScore.textContent="BEST: "+String(best).padStart(3,"0");
+
+    gameOverScreen.classList.remove("hidden");
+}
+
+canvas.addEventListener("pointerdown",e=>{
+    e.preventDefault();
+    canvas.setPointerCapture?.(e.pointerId);
+    press();
+});
+
+canvas.addEventListener("pointerup",e=>{
+    e.preventDefault();
+    release();
+});
+
+canvas.addEventListener("pointercancel",e=>{
+    e.preventDefault();
+    release();
+});
+
+window.addEventListener("keydown",e=>{
+    if(e.code==="Space"&&!e.repeat){
+        e.preventDefault();
+        press();
+    }
+});
+
+window.addEventListener("keyup",e=>{
+    if(e.code==="Space"){
+        e.preventDefault();
+        release();
+    }
+});
+
+startButton.addEventListener("click",resetGame);
+retryButton.addEventListener("click",resetGame);
+
+ctx.fillStyle="#000";
+ctx.fillRect(0,0,W,H);
+
+})();
+</script>
+</body>
+</html>
