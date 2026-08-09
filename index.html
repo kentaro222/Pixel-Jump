@@ -2,15 +2,16 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
 <title>PIXEL JUMP</title>
 <style>
 *{box-sizing:border-box}
-html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;overflow:hidden;touch-action:none;font-family:"Courier New",monospace}
+html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;overflow:hidden;touch-action:none;overscroll-behavior:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;font-family:"Courier New",monospace}
 body{min-height:100dvh;display:flex;align-items:center;justify-content:center}
 #game-wrap{position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center}
 canvas{display:block;background:#000;border:2px solid #fff;image-rendering:pixelated;image-rendering:crisp-edges}
-.overlay{position:absolute;inset:0;z-index:20;display:flex;flex-direction:column;justify-content:center;align-items:center;background:rgba(0,0,0,.88);text-align:center;padding:24px}
+.overlay{position:absolute;inset:0;z-index:20;display:flex;flex-direction:column;justify-content:center;align-items:center;background:rgba(0,0,0,.88);text-align:center;padding:max(24px,env(safe-area-inset-top)) max(24px,env(safe-area-inset-right)) max(24px,env(safe-area-inset-bottom)) max(24px,env(safe-area-inset-left))}
 .hidden{display:none}
 h1{margin:0 0 12px;font-size:38px}
 p{margin:5px 0;color:#bbb;font-size:13px}
@@ -124,7 +125,26 @@ let cameraY=0;
 let platforms=[];
 let nextPlatformY=0,nextStep=0;
 let highestStep=0;
-let best=Number(localStorage.getItem("pixelJumpBest")||0);
+
+function loadBest(){
+    try{
+        const value=Number(localStorage.getItem("pixelJumpBest")||0);
+        return Number.isFinite(value)?value:0;
+    }catch(err){
+        console.warn("High score storage is unavailable.",err);
+        return 0;
+    }
+}
+
+function saveBest(value){
+    try{
+        localStorage.setItem("pixelJumpBest",String(value));
+    }catch(err){
+        console.warn("Could not save high score.",err);
+    }
+}
+
+let best=loadBest();
 
 let aimPhase=0;
 let charging=false;
@@ -168,13 +188,58 @@ function getPlatformSettings(step){
     };
 }
 
+function maxHorizontalReachForRise(rise){
+    // 最大POWERで指定の高さに達し、下降時に同じ高さへ戻るまでの時間から
+    // 水平方向の最大到達距離を求める。
+    const vy=CONFIG.MAX_JUMP_VY;
+    const g=CONFIG.GRAVITY;
+    const disc=vy*vy-2*g*rise;
+    if(disc<0) return 0;
+
+    const landingTime=(vy+Math.sqrt(disc))/g;
+    return CONFIG.MAX_VX*landingTime;
+}
+
 function addPlatform(){
     nextStep++;
     const s=getPlatformSettings(nextStep);
-    nextPlatformY-=rand(s.minGap,s.maxGap);
+
+    // 物理上の最高到達高度を超える配置は生成しない。
+    // 現在の設定では通常この制限には当たらないが、
+    // 後から難易度値を変更しても到達不能にならないための安全策。
+    const maxRise=(CONFIG.MAX_JUMP_VY*CONFIG.MAX_JUMP_VY)/(2*CONFIG.GRAVITY);
+    const requestedGap=rand(s.minGap,s.maxGap);
+    const gap=Math.min(requestedGap,maxRise*0.92);
+
+    const previous=platforms[platforms.length-1];
+    nextPlatformY-=gap;
+
     const width=rand(s.minW,s.maxW);
     const margin=14;
-    const x=rand(margin,W-margin-width);
+
+    let minX=margin;
+    let maxX=W-margin-width;
+
+    // 直前の足場から最大POWERで直接届く水平範囲に収める。
+    // 現行パラメータではほぼ画面全域が範囲内なので、
+    // 既存のランダム感を保ったまま「理論上届かない配置」だけを排除する。
+    if(previous){
+        const reach=maxHorizontalReachForRise(gap);
+        const previousCenter=previous.x+previous.w/2;
+        minX=Math.max(minX,previousCenter-reach-width/2);
+        maxX=Math.min(maxX,previousCenter+reach-width/2);
+    }
+
+    if(maxX<minX){
+        const center=clamp(
+            previous?previous.x+previous.w/2:W/2,
+            margin+width/2,
+            W-margin-width/2
+        );
+        minX=maxX=center-width/2;
+    }
+
+    const x=rand(minX,maxX);
     platforms.push({id:nextStep,step:nextStep,x,y:nextPlatformY,w:width,h:CONFIG.PLATFORM_H});
 }
 
@@ -434,6 +499,16 @@ function drawMeter(){
         CONFIG.METER_H
     );
 
+    // 真上ジャンプ（水平速度0）の基準。
+    // 方向バーには中央だけ1pxの目印を置く。
+    ctx.fillStyle="#fff";
+    ctx.fillRect(
+        Math.floor(centerX),
+        Math.floor(meterY+2),
+        1,
+        Math.max(1,CONFIG.METER_H-4)
+    );
+
     const aim=charging?lockedAim:aimValue();
 
     const dotX=
@@ -529,7 +604,7 @@ function endGame(){
 
     if(highestStep>best){
         best=highestStep;
-        localStorage.setItem("pixelJumpBest",String(best));
+        saveBest(best);
     }
 
     finalScore.textContent="HEIGHT: "+String(highestStep).padStart(3,"0");
@@ -568,6 +643,22 @@ window.addEventListener("keyup",e=>{
         release();
     }
 });
+
+// タブ切替・画面ロックなどから復帰した直後に巨大なdtを入れない。
+document.addEventListener("visibilitychange",()=>{
+    if(gameState==="playing"){
+        lastTime=performance.now();
+    }
+});
+
+window.addEventListener("pageshow",()=>{
+    if(gameState==="playing"){
+        lastTime=performance.now();
+    }
+});
+
+// 長押し時のコンテキストメニュー等に操作を奪われないようにする。
+canvas.addEventListener("contextmenu",e=>e.preventDefault());
 
 startButton.addEventListener("click",resetGame);
 retryButton.addEventListener("click",resetGame);
