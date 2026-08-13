@@ -58,23 +58,89 @@ ctx.imageSmoothingEnabled=false;
 
 const spriteSheet=new Image();
 let spriteReady=false;
+let activeSprite=spriteSheet;
+let usingFallbackSprite=false;
+
 const FRAME_W=16,FRAME_H=16;
 const FRAME_IDLE=0,FRAME_STEP=1,FRAME_JUMP=2;
 
+function createFallbackSpriteSheet(){
+    // 外部PNGが読めない場合でもゲームを遊べるよう、
+    // 48x16 / 3フレームの簡易1bitキャラを自動生成する。
+    const c=document.createElement("canvas");
+    c.width=48;
+    c.height=16;
+    const g=c.getContext("2d");
+    g.imageSmoothingEnabled=false;
+    g.fillStyle="#fff";
+
+    function px(frame,x,y,w=1,h=1){
+        g.fillRect(frame*16+x,y,w,h);
+    }
+
+    // IDLE
+    px(0,6,2,4,3);     // head
+    px(0,5,5,6,5);     // body
+    px(0,4,6,1,4);     // left arm
+    px(0,11,6,1,4);    // right arm
+    px(0,6,10,2,4);    // left leg
+    px(0,8,10,2,4);    // right leg
+    px(0,5,14,3,1);    // left foot
+    px(0,8,14,3,1);    // right foot
+
+    // STEP
+    px(1,6,2,4,3);
+    px(1,5,5,6,5);
+    px(1,4,6,1,4);
+    px(1,11,6,1,4);
+    px(1,5,10,2,3);
+    px(1,9,10,2,3);
+    px(1,3,13,4,1);
+    px(1,9,13,4,1);
+
+    // JUMP
+    px(2,6,3,4,3);
+    px(2,5,6,6,5);
+    px(2,3,3,2,5);     // left arm up
+    px(2,11,3,2,5);    // right arm up
+    px(2,4,11,3,2);    // left leg out
+    px(2,9,11,3,2);    // right leg out
+    px(2,3,13,3,1);
+    px(2,10,13,3,1);
+
+    return c;
+}
+
+function useFallbackSprite(reason){
+    activeSprite=createFallbackSpriteSheet();
+    usingFallbackSprite=true;
+    spriteReady=true;
+    startButton.disabled=false;
+    startButton.textContent="START";
+    console.warn("Using built-in fallback sprite:",reason);
+}
+
 spriteSheet.onload=()=>{
     if(spriteSheet.naturalWidth!==48 || spriteSheet.naturalHeight!==16){
-        startButton.textContent="SPRITE SIZE ERROR";
-        console.error("player_1bit00_sheet.png must be 48x16.",spriteSheet.naturalWidth,spriteSheet.naturalHeight);
+        console.error(
+            "player_1bit00_sheet.png must be 48x16.",
+            spriteSheet.naturalWidth,
+            spriteSheet.naturalHeight
+        );
+        useFallbackSprite("sprite size mismatch");
         return;
     }
+
+    activeSprite=spriteSheet;
+    usingFallbackSprite=false;
     spriteReady=true;
     startButton.disabled=false;
     startButton.textContent="START";
 };
 
 spriteSheet.onerror=()=>{
-    startButton.textContent="SPRITE LOAD ERROR";
     console.error("Could not load ./player_1bit00_sheet.png");
+    useFallbackSprite("sprite load error");
 };
 
 spriteSheet.src="./player_1bit00_sheet.png";
@@ -105,6 +171,10 @@ const CONFIG={
     DIFFICULTY_MAX_STEP:40,
     POST_MAX_GAP_MAX:154,
     POST_MAX_NO_SKIP_MARGIN:4,
+    POST_60_NARROW_START:60,
+    POST_60_NARROW_END:80,
+    POST_60_MIN_W:38,
+    POST_60_MAX_W:68,
     LAND_MARGIN_X:21,
     LAND_TOLERANCE:5,
     CAMERA_LINE:0.44,
@@ -205,6 +275,21 @@ function maxHorizontalReachForRise(rise){
 function addPlatform(){
     nextStep++;
     const s=getPlatformSettings(nextStep);
+
+    // 60段以降は足場幅をさらに狭くしていく。
+    // 60段では従来の最終幅(52〜88px)のまま、
+    // 80段で38〜68pxに到達し、それ以降は固定。
+    if(nextStep>CONFIG.POST_60_NARROW_START){
+        const narrowT=clamp(
+            (nextStep-CONFIG.POST_60_NARROW_START)/
+            (CONFIG.POST_60_NARROW_END-CONFIG.POST_60_NARROW_START),
+            0,
+            1
+        );
+
+        s.minW=lerp(s.minW,CONFIG.POST_60_MIN_W,narrowT);
+        s.maxW=lerp(s.maxW,CONFIG.POST_60_MAX_W,narrowT);
+    }
 
     // 物理上の最高到達高度を超える配置は生成しない。
     // 現在の設定では通常この制限には当たらないが、
@@ -454,14 +539,14 @@ function drawPlayer(){
         ctx.translate(screenX+player.w,screenY);
         ctx.scale(-1,1);
         ctx.drawImage(
-            spriteSheet,
+            activeSprite,
             sourceX,0,FRAME_W,FRAME_H,
             0,0,player.w,player.h
         );
     } else {
         ctx.translate(screenX,screenY);
         ctx.drawImage(
-            spriteSheet,
+            activeSprite,
             sourceX,0,FRAME_W,FRAME_H,
             0,0,player.w,player.h
         );
