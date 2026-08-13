@@ -103,6 +103,8 @@ const CONFIG={
     END_MIN_GAP:96,
     END_MAX_GAP:128,
     DIFFICULTY_MAX_STEP:40,
+    POST_MAX_GAP_MAX:154,
+    POST_MAX_NO_SKIP_MARGIN:4,
     LAND_MARGIN_X:21,
     LAND_TOLERANCE:5,
     CAMERA_LINE:0.44,
@@ -208,7 +210,18 @@ function addPlatform(){
     // 現在の設定では通常この制限には当たらないが、
     // 後から難易度値を変更しても到達不能にならないための安全策。
     const maxRise=(CONFIG.MAX_JUMP_VY*CONFIG.MAX_JUMP_VY)/(2*CONFIG.GRAVITY);
-    const requestedGap=rand(s.minGap,s.maxGap);
+
+    let requestedGap;
+    if(nextStep>CONFIG.DIFFICULTY_MAX_STEP){
+        // 最高難度以降は「一個飛ばし」を物理的に不可能にする。
+        // 連続する2つの高低差の合計が必ず最大ジャンプ高度を超えるよう、
+        // 各ギャップを最大高度の半分より少し大きくする。
+        const noSkipMinGap=maxRise/2+CONFIG.POST_MAX_NO_SKIP_MARGIN;
+        requestedGap=rand(noSkipMinGap,CONFIG.POST_MAX_GAP_MAX);
+    }else{
+        requestedGap=rand(s.minGap,s.maxGap);
+    }
+
     const gap=Math.min(requestedGap,maxRise*0.92);
 
     const previous=platforms[platforms.length-1];
