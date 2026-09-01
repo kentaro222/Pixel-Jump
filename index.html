@@ -36,6 +36,8 @@ button:disabled{background:#555;color:#aaa}
 <p id="final-score">HEIGHT: 000</p>
 <p id="final-time">TIME: 0.00</p>
 <p id="best-score">BEST: 000</p>
+<p id="continue-note">CONTINUE = PRACTICE / RECORDS DISABLED</p>
+<button id="continue-button">CONTINUE</button>
 <button id="retry-button">RETRY</button>
 </div>
 </div>
@@ -47,6 +49,7 @@ const ctx=canvas.getContext("2d");
 const startScreen=document.getElementById("start-screen");
 const gameOverScreen=document.getElementById("game-over-screen");
 const startButton=document.getElementById("start-button");
+const continueButton=document.getElementById("continue-button");
 const retryButton=document.getElementById("retry-button");
 const finalScore=document.getElementById("final-score");
 const finalTime=document.getElementById("final-time");
@@ -160,21 +163,27 @@ const CONFIG={
     METER_MARGIN:8,
     POWER_GAP:14,
     PLATFORM_H:8,
-    START_MIN_W:120,
-    START_MAX_W:165,
-    START_MIN_GAP:72,
-    START_MAX_GAP:98,
-    END_MIN_W:52,
-    END_MAX_W:88,
-    END_MIN_GAP:96,
+    START_MIN_W:128,
+    START_MAX_W:168,
+    START_MIN_GAP:70,
+    START_MAX_GAP:94,
+    END_MIN_W:56,
+    END_MAX_W:92,
+    END_MIN_GAP:100,
     END_MAX_GAP:128,
-    DIFFICULTY_MAX_STEP:40,
+    START_MIN_X_DIST:18,
+    START_MAX_X_DIST:78,
+    END_MIN_X_DIST:90,
+    END_MAX_X_DIST:190,
+    DIFFICULTY_MAX_STEP:50,
+    POST_NO_SKIP_END:70,
     POST_MAX_GAP_MAX:154,
     POST_MAX_NO_SKIP_MARGIN:4,
     POST_60_NARROW_START:60,
-    POST_60_NARROW_END:80,
-    POST_60_MIN_W:38,
-    POST_60_MAX_W:68,
+    POST_60_NARROW_END:90,
+    POST_60_MIN_W:46,
+    POST_60_MAX_W:76,
+    POST_60_MAX_X_DIST:220,
     LAND_MARGIN_X:21,
     LAND_TOLERANCE:5,
     CAMERA_LINE:0.44,
@@ -217,6 +226,9 @@ function saveBest(value){
 }
 
 let best=loadBest();
+let bestBeforeRun=best;
+let continueUsed=false;
+let checkpoint=null;
 
 let aimPhase=0;
 let charging=false;
@@ -245,19 +257,51 @@ function difficulty(step){
         1
     );
 
-    // 序盤〜中盤は比較的早く締まり、
-    // 最高難度への到達だけは40段付近まで引っ張る。
-    return Math.pow(t,0.75);
+    // 序盤は急に締めすぎず、20〜50段にかけてじわじわ難しくする。
+    return Math.pow(t,0.90);
 }
 
 function getPlatformSettings(step){
     const d=difficulty(step);
     return {
+        d,
         minW:lerp(CONFIG.START_MIN_W,CONFIG.END_MIN_W,d),
         maxW:lerp(CONFIG.START_MAX_W,CONFIG.END_MAX_W,d),
         minGap:lerp(CONFIG.START_MIN_GAP,CONFIG.END_MIN_GAP,d),
-        maxGap:lerp(CONFIG.START_MAX_GAP,CONFIG.END_MAX_GAP,d)
+        maxGap:lerp(CONFIG.START_MAX_GAP,CONFIG.END_MAX_GAP,d),
+        minXDist:lerp(CONFIG.START_MIN_X_DIST,CONFIG.END_MIN_X_DIST,d),
+        maxXDist:lerp(CONFIG.START_MAX_X_DIST,CONFIG.END_MAX_X_DIST,d)
     };
+}
+
+function getChallengeMix(d){
+    // 同じ足場で「細い・高い・遠い」が全部MAXにならないようにする。
+    // 3要素のローカル難度(0〜1)に合計上限を設け、
+    // 段数が上がるほど少しずつ厳しい組み合わせを許可する。
+    let widthChallenge=Math.random();
+    let gapChallenge=Math.random();
+    let xChallenge=Math.random();
+
+    const maxBudget=1.22+0.28*d;
+    const minBudget=0.62+0.28*d;
+    let sum=widthChallenge+gapChallenge+xChallenge;
+
+    if(sum>maxBudget){
+        const scale=maxBudget/sum;
+        widthChallenge*=scale;
+        gapChallenge*=scale;
+        xChallenge*=scale;
+        sum=maxBudget;
+    }
+
+    if(sum<minBudget && sum>0){
+        const scale=minBudget/sum;
+        widthChallenge=Math.min(1,widthChallenge*scale);
+        gapChallenge=Math.min(1,gapChallenge*scale);
+        xChallenge=Math.min(1,xChallenge*scale);
+    }
+
+    return {widthChallenge,gapChallenge,xChallenge};
 }
 
 function maxHorizontalReachForRise(rise){
@@ -276,9 +320,8 @@ function addPlatform(){
     nextStep++;
     const s=getPlatformSettings(nextStep);
 
-    // 60段以降は足場幅をさらに狭くしていく。
-    // 60段では従来の最終幅(52〜88px)のまま、
-    // 80段で38〜68pxに到達し、それ以降は固定。
+    // 60段以降は足場幅をもう一段だけ締める。
+    // 以前より下限を緩め、極端な細さより横距離で難しくする。
     if(nextStep>CONFIG.POST_60_NARROW_START){
         const narrowT=clamp(
             (nextStep-CONFIG.POST_60_NARROW_START)/
@@ -289,56 +332,81 @@ function addPlatform(){
 
         s.minW=lerp(s.minW,CONFIG.POST_60_MIN_W,narrowT);
         s.maxW=lerp(s.maxW,CONFIG.POST_60_MAX_W,narrowT);
+        s.maxXDist=lerp(s.maxXDist,CONFIG.POST_60_MAX_X_DIST,narrowT);
     }
 
     // 物理上の最高到達高度を超える配置は生成しない。
-    // 現在の設定では通常この制限には当たらないが、
-    // 後から難易度値を変更しても到達不能にならないための安全策。
     const maxRise=(CONFIG.MAX_JUMP_VY*CONFIG.MAX_JUMP_VY)/(2*CONFIG.GRAVITY);
 
-    let requestedGap;
+    // 50〜70段では縦Gapを滑らかに伸ばし、70段以降で
+    // 連続2足場の合計高低差が最大ジャンプ高度を超える状態にする。
     if(nextStep>CONFIG.DIFFICULTY_MAX_STEP){
-        // 最高難度以降は「一個飛ばし」を物理的に不可能にする。
-        // 連続する2つの高低差の合計が必ず最大ジャンプ高度を超えるよう、
-        // 各ギャップを最大高度の半分より少し大きくする。
         const noSkipMinGap=maxRise/2+CONFIG.POST_MAX_NO_SKIP_MARGIN;
-        requestedGap=rand(noSkipMinGap,CONFIG.POST_MAX_GAP_MAX);
-    }else{
-        requestedGap=rand(s.minGap,s.maxGap);
+        const postT=clamp(
+            (nextStep-CONFIG.DIFFICULTY_MAX_STEP)/
+            (CONFIG.POST_NO_SKIP_END-CONFIG.DIFFICULTY_MAX_STEP),
+            0,
+            1
+        );
+        s.minGap=lerp(s.minGap,noSkipMinGap,postT);
+        s.maxGap=lerp(s.maxGap,CONFIG.POST_MAX_GAP_MAX,postT);
     }
 
+    const mix=getChallengeMix(s.d);
+
+    // widthChallenge=1ほど細い。gap/x は1ほど遠い。
+    const width=lerp(s.maxW,s.minW,mix.widthChallenge);
+    const requestedGap=lerp(s.minGap,s.maxGap,mix.gapChallenge);
     const gap=Math.min(requestedGap,maxRise*0.92);
 
     const previous=platforms[platforms.length-1];
     nextPlatformY-=gap;
 
-    const width=rand(s.minW,s.maxW);
     const margin=14;
+    const minCenter=margin+width/2;
+    const maxCenter=W-margin-width/2;
 
-    let minX=margin;
-    let maxX=W-margin-width;
+    let center=W/2;
 
-    // 直前の足場から最大POWERで直接届く水平範囲に収める。
-    // 現行パラメータではほぼ画面全域が範囲内なので、
-    // 既存のランダム感を保ったまま「理論上届かない配置」だけを排除する。
     if(previous){
-        const reach=maxHorizontalReachForRise(gap);
         const previousCenter=previous.x+previous.w/2;
-        minX=Math.max(minX,previousCenter-reach-width/2);
-        maxX=Math.min(maxX,previousCenter+reach-width/2);
+        let xDist=lerp(s.minXDist,s.maxXDist,mix.xChallenge);
+
+        // 最大POWERで届く距離には余裕を残す。
+        const safeReach=maxHorizontalReachForRise(gap)*0.88;
+        xDist=Math.min(xDist,safeReach);
+
+        const leftCenter=previousCenter-xDist;
+        const rightCenter=previousCenter+xDist;
+        const canLeft=leftCenter>=minCenter;
+        const canRight=rightCenter<=maxCenter;
+
+        if(canLeft&&canRight){
+            center=Math.random()<0.5?leftCenter:rightCenter;
+        }else if(canLeft){
+            center=leftCenter;
+        }else if(canRight){
+            center=rightCenter;
+        }else{
+            // 画面端で希望距離を確保できない場合は、
+            // より距離を取れる側へ寄せる。
+            const leftRoom=previousCenter-minCenter;
+            const rightRoom=maxCenter-previousCenter;
+            center=leftRoom>rightRoom?minCenter:maxCenter;
+        }
     }
 
-    if(maxX<minX){
-        const center=clamp(
-            previous?previous.x+previous.w/2:W/2,
-            margin+width/2,
-            W-margin-width/2
-        );
-        minX=maxX=center-width/2;
-    }
+    center=clamp(center,minCenter,maxCenter);
+    const x=center-width/2;
 
-    const x=rand(minX,maxX);
-    platforms.push({id:nextStep,step:nextStep,x,y:nextPlatformY,w:width,h:CONFIG.PLATFORM_H});
+    platforms.push({
+        id:nextStep,
+        step:nextStep,
+        x,
+        y:nextPlatformY,
+        w:width,
+        h:CONFIG.PLATFORM_H
+    });
 }
 
 function ensurePlatforms(){
@@ -365,6 +433,9 @@ function resetGame(){
     nextPlatformY=0;
     nextStep=0;
     highestStep=0;
+    bestBeforeRun=best;
+    continueUsed=false;
+    checkpoint=null;
     aimPhase=0;
     charging=false;
     charge=0;
@@ -383,6 +454,11 @@ function resetGame(){
     player.currentPlatformId=base.id;
     player.currentStep=0;
     player.facing=1;
+
+    checkpoint={
+        platform:{...base},
+        cameraY:0
+    };
 
     nextPlatformY=baseY;
     nextStep=0;
@@ -424,7 +500,7 @@ function release(){
 
 function update(dt){
     elapsed+=dt;
-    playTime+=dt;
+    if(!continueUsed) playTime+=dt;
 
     if(player.grounded){
         if(!charging){
@@ -510,6 +586,16 @@ function update(dt){
 
     ensurePlatforms();
     prunePlatforms();
+
+    if(player.grounded&&player.currentPlatformId!==null){
+        const platform=platforms.find(p=>p.id===player.currentPlatformId);
+        if(platform){
+            checkpoint={
+                platform:{...platform},
+                cameraY
+            };
+        }
+    }
 
     if(player.y-cameraY>H+60){
         endGame();
@@ -673,6 +759,13 @@ function draw(){
     ctx.fillText(heightText,12,23);
     ctx.fillText(timeText,12,43);
 
+    if(continueUsed){
+        ctx.textAlign="right";
+        ctx.strokeText("PRACTICE",W-12,23);
+        ctx.fillText("PRACTICE",W-12,23);
+        ctx.textAlign="left";
+    }
+
 
 }
 
@@ -694,21 +787,67 @@ function loop(now){
     }
 }
 
+function continueGame(){
+    if(gameState!=="gameover"||!checkpoint) return;
+
+    // CONTINUEを選んだ時点で、このラン全体をテスト扱いにする。
+    // 直前のGAME OVERで一時的にBESTを更新していても開始前の値へ戻す。
+    continueUsed=true;
+    if(best!==bestBeforeRun){
+        best=bestBeforeRun;
+        saveBest(best);
+    }
+
+    const saved=checkpoint.platform;
+    let platform=platforms.find(p=>p.id===saved.id);
+    if(!platform){
+        platform={...saved};
+        platforms.push(platform);
+    }
+
+    player.x=clamp(
+        platform.x+platform.w/2-player.w/2,
+        0,
+        W-player.w
+    );
+    player.y=platform.y-player.h;
+    player.vx=0;
+    player.vy=0;
+    player.grounded=true;
+    player.currentPlatformId=platform.id;
+    player.currentStep=platform.step;
+
+    cameraY=checkpoint.cameraY;
+    aimPhase=0;
+    charging=false;
+    charge=0;
+    lockedAim=0;
+    directionLocked=false;
+
+    gameState="playing";
+    lastTime=performance.now();
+    gameOverScreen.classList.add("hidden");
+    requestAnimationFrame(loop);
+}
+
 function endGame(){
     if(gameState!=="playing") return;
 
     gameState="gameover";
     charging=false;
 
-    if(highestStep>best){
+    if(!continueUsed&&highestStep>best){
         best=highestStep;
         saveBest(best);
     }
 
-    finalScore.textContent="HEIGHT: "+String(highestStep).padStart(3,"0");
-    finalTime.textContent="TIME: "+playTime.toFixed(2);
+    finalScore.textContent="HEIGHT: "+String(highestStep).padStart(3,"0")+(continueUsed?" (PRACTICE)":"");
+    finalTime.textContent=continueUsed
+        ?"TIME: --"
+        :"TIME: "+playTime.toFixed(2);
     bestScore.textContent="BEST: "+String(best).padStart(3,"0");
 
+    continueButton.disabled=!checkpoint;
     gameOverScreen.classList.remove("hidden");
 }
 
@@ -732,6 +871,9 @@ window.addEventListener("keydown",e=>{
     if(e.code==="Space"&&!e.repeat){
         e.preventDefault();
         press();
+    }else if(e.code==="KeyC"&&!e.repeat&&gameState==="gameover"){
+        e.preventDefault();
+        continueGame();
     }
 });
 
@@ -759,6 +901,7 @@ window.addEventListener("pageshow",()=>{
 canvas.addEventListener("contextmenu",e=>e.preventDefault());
 
 startButton.addEventListener("click",resetGame);
+continueButton.addEventListener("click",continueGame);
 retryButton.addEventListener("click",resetGame);
 
 ctx.fillStyle="#000";
